@@ -8,7 +8,7 @@ MAX_LONG_EXPOSURE = 300_000
 MAX_SHORT_EXPOSURE = 200_000
 SELL = "SELL"
 BUY = "BUY"
-ALPHA = 1
+ALPHA = 2
 ORDER_SIZE = 1_000
  
 class OrderQueue:
@@ -16,7 +16,7 @@ class OrderQueue:
  
     def __init__(self):
         """Initialize order queue and inventory tracking."""
-        self.queue = []
+        self.queue = dict()  # Stores buy trades
         self.trade_log = []
  
  
@@ -39,26 +39,17 @@ class OrderQueue:
         else:
             return net_exposure + trade_size > MAX_SHORT_EXPOSURE
  
-    def offload_etf(self, ticker, action_performed, quantity, price):
-        # if action_performed == BUY:
-        #     while quantity > 0:
-        #         trade_size = min(10_000, quantity)
-        #         place_market_order(SELL, ticker, trade_size)
-        #         quantity -= trade_size
-        # if action_performed == SELL:
-        #     while quantity > 0:
-        #         trade_size = min(10_000, quantity)
-        #         place_market_order(BUY, ticker, trade_size)
-        #         quantity -= trade_size
-        # diff = ALPHA * abs(bid-price)
-        stop_loss = None
-
+    def offload_etf(self, ticker, action_performed, quantity):
         if action_performed == BUY:
-            stop_loss = price - ALPHA
-        else:
-            stop_loss = price + ALPHA
-        
-        self.add_trade(ticker, price, action_performed, quantity, stop_loss)
+            while quantity > 0:
+                trade_size = min(10_000, quantity)
+                place_market_order(SELL, ticker, trade_size)
+                quantity -= trade_size
+        if action_performed == SELL:
+            while quantity > 0:
+                trade_size = min(10_000, quantity)
+                place_market_order(BUY, ticker, trade_size)
+                quantity -= trade_size
  
     def return_order_id(self, order_id):
         while True:
@@ -77,31 +68,20 @@ class OrderQueue:
                 return order_status
  
  
-    # def add_trade(self, ticker, price, action, id, z_mean, z):
-    #     order = self.return_order_id(id)
-    #     assert(order["action"] == action)
-    #     assert(order["ticker"] == ticker)
+    def add_trade(self, ticker, price, action, id, z_mean, z):
+        order = self.return_order_id(id)
+        assert(order["action"] == action)
+        assert(order["ticker"] == ticker)
  
-    #     if not order:
-    #         print("❌ AHH why is order not available")
-    #         # import sys
-    #         # sys.exit(0)
-    #         return
+        if not order:
+            print("❌ AHH why is order not available")
+            # import sys
+            # sys.exit(0)
+            return
  
-    #     order["stop/loss"] = self.calculate_stop_loss(ticker, action, z, z_mean, price)
+        order["stop/loss"] = self.calculate_stop_loss(ticker, action, z, z_mean, price)
  
-    #     self.queue[id] = order
-
-    def add_trade(self, ticker, price, action, quantity, stop_loss):
-        order = {
-            "ticker": ticker,
-            "price": price,
-            "action": action,
-            "quantity": quantity,
-            "stop/loss": stop_loss
-        }
- 
-        self.queue.append(order)
+        self.queue[id] = order
  
     def calculate_stop_loss(self, ticker, action, z, z_mean, price):
         if ticker in ETF_TICKERS:
@@ -259,15 +239,14 @@ class OrderQueue:
         if self.check_gross_limit(quantity):
             # am holding too much short and long (basically reverse it, if you are short a stock, long it and vice versa), (do it equally for all stocks)
             # going to do a while loop while I am over quantity, do the opposite action for ORDER_SIZE for each stock
-            # while self.check_gross_limit(quantity):
-            #     for ticker in STOCK_TICKERS + ETF_TICKERS:
-            #         position = get_position(ticker)
-            #         self.print(f"position of {ticker} is {position}")
-            #         if position < 0:
-            #             place_market_order(BUY, ticker, 10_000)
-            #         else:
-            #             place_market_order(SELL, ticker, 10_000)
-            return
+            while self.check_gross_limit(quantity):
+                for ticker in STOCK_TICKERS + ETF_TICKERS:
+                    position = get_position(ticker)
+                    self.print(f"position of {ticker} is {position}")
+                    if position < 0:
+                        place_market_order(BUY, ticker, 10_000)
+                    else:
+                        place_market_order(SELL, ticker, 10_000)
  
         if self.check_net_limit(quantity, action):
  
@@ -275,15 +254,14 @@ class OrderQueue:
             #     # want to sell, I am holding too much short though
             # else:
             #     # want to buy, I am holding too much long though
-            # while self.check_net_limit(quantity, action):
-            #     for ticker in STOCK_TICKERS + ETF_TICKERS:
-            #         position = get_position(ticker)
-            #         self.print(f"{position} of {ticker}")
-            #         if position < 0 and action == SELL:
-            #             place_market_order(BUY, ticker, 10_000)
-            #         elif position > 0 and action == BUY:
-            #             place_market_order(SELL, ticker, 10_000)
-            return
+            while self.check_net_limit(quantity, action):
+                for ticker in STOCK_TICKERS + ETF_TICKERS:
+                    position = get_position(ticker)
+                    self.print(f"{position} of {ticker}")
+                    if position < 0 and action == SELL:
+                        place_market_order(BUY, ticker, 10_000)
+                    elif position > 0 and action == BUY:
+                        place_market_order(SELL, ticker, 10_000)
  
         self.print("Fixed issue")
  
@@ -332,32 +310,41 @@ class OrderQueue:
         if not ticker_prices:
             return  # No valid bid, do nothing
  
-        updated_queue = []
+        updated_queue = {}
  
-        for order in self.queue:  # Iterates over key-value pairs
-            if not order or order is None:
+        for id in list(self.queue.keys()):  # Iterates over key-value pairs
+            if not id or id is None:
                 continue
-  
-            ticker = order["ticker"]
-            quantity = order["quantity"]
-            action = order["action"]
-            stop_loss = order["stop/loss"]
-            price = order["price"]
-      
+ 
+            order_rit = get_order(id)
+            if not order_rit:
+                print(f"🚨 ERROR: Failed to fetch order {id}")
+                continue
+ 
+            order_rit["stop/loss"] = self.queue[id]["stop/loss"]
+ 
+            ticker = order_rit["ticker"]
+            quantity = order_rit["quantity"]
+            quantity_filled = order_rit["quantity_filled"]
+            action = order_rit["action"]
+            type_ = order_rit["type"] 
+            stop_loss = order_rit["stop/loss"]
+            open = order_rit["status"]
+            bid, ask = ticker_prices[ticker]
+            trade_size = quantity - quantity_filled
+ 
+            if quantity == quantity_filled or open != "OPEN":
+                continue
+ 
             stop_loss_went_through = False
  
-            if action == BUY and price < stop_loss:
-                # stop_loss_went_through |= self.handle_stop_loss(id, ticker, trade_size, BUY, bid)
-                stop_loss_went_through = True
-                place_market_order(SELL, ticker, quantity)
-            elif action == SELL and stop_loss < price:
-                # stop_loss_went_through |= self.handle_stop_loss(id, ticker, trade_size, SELL, ask)
-                stop_loss_went_through = True
-                place_market_order(BUY, ticker, quantity)
-
+            if action == BUY and stop_loss < bid:
+                stop_loss_went_through |= self.handle_stop_loss(id, ticker, trade_size, BUY, bid)
+            elif action == SELL and ask < stop_loss:
+                stop_loss_went_through |= self.handle_stop_loss(id, ticker, trade_size, SELL, ask)
  
             if not stop_loss_went_through:
-                updated_queue.append(order)
+                updated_queue[id] = order_rit
  
         self.queue = updated_queue
  
@@ -433,5 +420,4 @@ class OrderQueue:
             self.print(f"{order_id}: {open} order for {type} {action} at {price} for {ticker}. Current bid is {prices[ticker][0]} and ask is {prices[ticker][1]}. Waiting for {stop} to {SELL if action == BUY else BUY} at. {quantity_filled} out of {quantity} shares.", False)
  
         self.print("-----------------\n", False)
-
 
